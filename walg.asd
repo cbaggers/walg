@@ -6,5 +6,4 @@
   :license "Specify license here"
   :serial t
   :components ((:file "package")
-               (:file "walg")))
-
+               (:file "base")))
