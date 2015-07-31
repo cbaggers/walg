@@ -5,5 +5,7 @@
   :author "Your Name <your.name@example.com>"
   :license "Specify license here"
   :serial t
+  :depends-on (#:defclass-triv)
   :components ((:file "package")
-               (:file "base")))
+               (:file "base")
+               (:file "meat")))

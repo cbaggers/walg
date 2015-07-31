@@ -1,5 +1,4 @@
 ;;;; package.lisp
 
 (defpackage #:walg
-  (:use #:cl))
-
+  (:use #:cl #:defclass-triv))
