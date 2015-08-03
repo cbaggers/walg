@@ -12,3 +12,17 @@
          (:report (lambda (condition stream)
                     (declare (ignorable condition))
                     (format stream ,error-string ,@body)))))))
+
+(defun group-by (source n)
+  "This takes a  flat list and emit a list of lists, each n long
+   containing the elements of the original list"
+  (if (zerop n) (error "zero length"))
+  (labels ((rec (source acc)
+	     (let ((rest (nthcdr n source)))
+	       (if (consp rest)
+		   (rec rest (cons (subseq source 0 n)
+				   acc))
+		   (nreverse (cons source acc))))))
+    (if source
+	(rec source nil)
+	nil)))

@@ -10,6 +10,30 @@
 (defclass-triv ~let () v defn body)
 (defclass-triv ~let-rec () v defn body)
 
+
+(defun ~lambda (v body) (make-instance '~lambda :v v :body body))
+(defun ~ident (name) (make-instance '~ident :name name))
+(defun ~apply (fn arg) (make-instance '~apply :fn fn :arg arg))
+(defun ~let (v defn body) (make-instance '~let :v v :defn defn :body body))
+(defun ~let-rec (v defn body) (make-instance '~let-rec :v v :defn defn :body body))
+
+
+(defmethod print-object ((x ~let-rec) stream)
+  (format stream "(~~let-rec ~s ~s ~s)" (v x) (defn x) (body x)))
+
+(defmethod print-object ((x ~let) stream)
+  (format stream "(~~let ~s ~s ~s)" (v x) (defn x) (body x)))
+
+(defmethod print-object ((x ~lambda) stream)
+  (format stream "(~~lambda ~s ~s)" (v x) (body x)))
+
+(defmethod print-object ((x ~apply) stream)
+  (format stream "(~~apply ~s ~s)" (fn x) (arg x)))
+
+(defmethod print-object ((x ~ident) stream)
+  (format stream "(~~ident ~s)" (name x)))
+
+
 ;; exception types
 (deferror ~type-error () (reason)
     "Type inference algorithm cannot infer type.~%Reason: ~a" reason)
@@ -30,10 +54,13 @@
 ;; type-variable
 (defclass-triv ~type-variable () id name instance)
 
-(defmethod make-instance :after ((x ~type-variable) &key)
+(defmethod initialize-instance :after ((x ~type-variable) &key)
   (setf (name x) nil
         (instance x) nil
         (id x) (get-next-variable-id)))
+
+(defun ~type-variable ()
+  (make-instance '~type-variable))
 
 (defmethod get-name (x ~type-variable)
   (if (name x)
@@ -41,30 +68,43 @@
       (setf (id x) (get-next-variable-name))))
 
 (defmethod print-object ((obj ~type-variable) stream)
-  (format stream "#<type-variable :id ~a ~@[:instance ~a~] ~@[:name ~a~]"
+  (format stream "#<type-variable :id ~a~@[ :instance ~a~]~@[ :name ~a~]>"
           (id obj) (instance obj) (name obj)))
 
 ;; type-operator
 (defclass-triv ~type-operator () name types)
 
+(defun ~type-operator (name &rest types)
+  (make-instance '~type-operator :name name :types types))
+
 (defmethod print-object ((obj ~type-operator) stream)
-  (format stream "#<type-operator :name ~a ~@[:types ~a~]"
+  (format stream "#<type-operator :name ~a~@[ :types ~a~]>"
           (name obj) (types obj)))
 
 ;; function
 (defclass-triv ~function (~type-operator))
 
-(defmethod make-instance ((obj ~function) &key from-type to-type)
+(defun ~function (from-type to-type)
+  (make-instance '~function :from-type from-type :to-type to-type))
+
+(defmethod initialize-instance ((obj ~function) &key from-type to-type)
   (setf (name obj) :->
         (types obj) `(,from-type ,to-type)))
 
 ;; basic types are constructed with a nullary type constructor
 
-(defvar ~integer (make-instance '~type-operator :name :int :types nil))
-(defvar ~bool (make-instance '~type-operator :name :bool :types nil))
+(defvar ~integer (make-instance '~type-operator :name "int" :types nil))
+(defvar ~bool (make-instance '~type-operator :name "bool" :types nil))
 
 ;; environment
 (defclass-triv ~env () (internal :initform (make-hash-table)))
+
+(defun %n-add-elements-to-env (env elements)
+  (loop :for (k v) :in elements :do (setf (gethash k (internal env)) v))
+  env)
+
+(defmethod make-env (&rest initial-elements)
+  (%n-add-elements-to-env (make-instance '~env) (group-by initial-elements 2)))
 
 (defmethod env-get (env key)
   (gethash key (internal env)))
@@ -73,10 +113,11 @@
   (setf (gethash key (internal env)) value))
 
 (defmethod copy-env (env &rest additions)
-  (let ((new-env (make-instance '~env)))
-    (maphash (lambda (k v) (setf (gethash k new-env) v))
+  (let ((new-env (make-instance '~env))
+        (additions (group-by additions 2)))
+    (maphash (lambda (k v) (setf (gethash k (internal new-env)) v))
              (internal env))
-    (loop :for (k v) :in additions :do (setf (gethash k new-env) v))
+    (%n-add-elements-to-env new-env additions)
     new-env))
 
 ;;-------------------------------------------------------------
@@ -111,22 +152,23 @@
               (~unify (make-instance
                        '~function
                        :from-type (~analyse (arg node) env non-generic)
-                       :to-type result-type))
+                       :to-type result-type)
+                      (~analyse (fn node) env non-generic))
               result-type))
     (~lambda (let* ((arg-type (make-instance '~type-variable)))
                (make-instance
                 '~function
                 :from-type arg-type
                 :to-type (~analyse (body node)
-                                   (copy-env env `(,(v node) ,arg-type))
+                                   (copy-env env (v node) arg-type)
                                    (union (list arg-type)
                                           (copy-seq non-generic))))))
     (~let (let ((defn-type (~analyse (defn node) env non-generic)))
             (~analyse (body node)
-                      (copy-env env `(,(v node) ,defn-type))
+                      (copy-env env (v node) defn-type)
                       non-generic)))
-    (~let-rec (let* ((new-type (make-instance '~type-variable))
-                     (new-env (copy-env env `(,(v node) new-type)))
+    (~let-rec (let* ((new-type (~type-variable))
+                     (new-env (copy-env env (v node) new-type))
                      (new-non-generic (union (list new-type)
                                              (copy-seq non-generic)))
                      (defn-type (~analyse (defn node)
@@ -175,8 +217,7 @@
                     (make-instance '~type-operator
                                    :name (name p)
                                    :types (mapcar #'fresh-rec (types p))))
-                   (otherwise nil) ;; assumed. maybe should be error?
-                   ))))
+                   (otherwise nil))))) ;; assumed. maybe should be error?
       (fresh-rec type))))
 
 ;; UGH the side effects...cant we clean this up a bit?
@@ -285,5 +326,48 @@
 
     Returns:
         True if name is an integer literal, otherwise False"
-  (handler-case (and (parse-integer "a1") t)
+  (handler-case (and (parse-integer name) t)
     (parse-error () nil)))
+
+;;-------------------------------------------------------------
+;; Examples
+
+(let* ((var1 (~type-variable))
+             (var2 (~type-variable))
+             (pair-type (~type-operator "*" var1 var2))
+             (var3 (~type-variable))
+             (my-env (make-env "pair" (~function var1 (~function var2 pair-type))
+                               "true" ~bool
+                               "cond" (~function ~bool (~function var3 (~function var3 var3)))
+                               "zero" (~function ~integer ~bool)
+                               "pred" (~function ~integer ~integer)
+                               "times" (~function ~integer (~function ~integer ~integer)))))
+  (let (;; (pair (~apply (~apply (~ident "pair")
+        ;;                       (~apply (~ident "f") (~ident "4")))
+        ;;               (~apply (~ident "f") (~ident "true"))))
+        (example
+         (~let-rec "factorial"
+                   (~lambda "n"
+                            (~apply
+                             (~apply
+                              (~apply (~ident "cond")
+                                      (~apply (~ident "zero") (~ident "n")))
+                              (~ident "1"))
+                             (~apply
+                              (~apply (~ident "times") (~ident "n"))
+                              (~apply (~ident "factorial")
+                                      (~apply (~ident "pred") (~ident "n"))))))
+                   (~apply (~ident "factorial") (~ident "5")))))
+
+    (defun test () (try-exp my-env example))))
+
+(defun try-exp (env node)
+  "Try to evaluate a type printing the result or reporting errors.
+
+    Args:
+        env: The type environment in which to evaluate the expression.
+        node: The root node of the abstract syntax tree of the expression.
+
+    Returns:
+        None"
+  (~analyse node env))
