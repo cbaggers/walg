@@ -26,3 +26,13 @@
     (if source
 	(rec source nil)
 	nil)))
+
+(defun mkstr (&rest args)
+  (with-output-to-string (s)
+    (dolist (a args) (princ a s))))
+
+(defun symb (&rest args)
+  (values (intern (apply #'mkstr args))))
+
+(defun symb-package (package &rest args)
+  (values (intern (apply #'mkstr args) package)))

@@ -1,4 +1,5 @@
 (in-package #:walg)
+(in-readtable fn:fn-reader)
 
 ;;-------------------------------------------------------------
 ;; Definitions
@@ -43,58 +44,69 @@
 
 
 ;; types and type constructors
+;; A type expressions TypeExp can be a type variable or a type operator.
+
 (let ((next-variable-id -1))
   (defun get-next-variable-id ()
     (incf next-variable-id)))
 
 (let ((next-variable-code (1- (char-code #\a))))
   (defun get-next-variable-name ()
-    (format nil "~a" (code-char (incf next-variable-code)))))
+    (symb (code-char (incf next-variable-code)))))
+
 
 ;; type-variable
-(defclass-triv ~type-variable () id name instance)
-
-(defmethod initialize-instance :after ((x ~type-variable) &key)
-  (setf (name x) nil
-        (instance x) nil
-        (id x) (get-next-variable-id)))
+;; A type variable, is uninstantiated when its instance field is nil, or
+;; instantiated otherwise.
+;; An instantiated type variable behaves like its instantiation.
+(defclass-triv ~type-variable ()
+  (id :initform (get-next-variable-id))
+  name
+  instance)
 
 (defun ~type-variable ()
   (make-instance '~type-variable))
 
-(defmethod get-name (x ~type-variable)
-  (if (name x)
-      (name x)
-      (setf (id x) (get-next-variable-name))))
+(defmethod name ((x ~type-variable))
+  (with-slots ((x-name name)) x
+    (or x-name (setf x-name (get-next-variable-name)))))
 
 (defmethod print-object ((obj ~type-variable) stream)
   (format stream "#<type-variable :id ~a~@[ :instance ~a~]~@[ :name ~a~]>"
           (id obj) (instance obj) (name obj)))
 
+
 ;; type-operator
+;; An n-ary type constructor which builds a new type from old
+;; A type operator (like bool or function) has a name and a list of type arguments
+;; (none for bool, two for function).
 (defclass-triv ~type-operator () name types)
 
 (defun ~type-operator (name &rest types)
+  (assert (typep name 'symbol))
   (make-instance '~type-operator :name name :types types))
 
 (defmethod print-object ((obj ~type-operator) stream)
-  (format stream "#<type-operator :name ~a~@[ :types ~a~]>"
-          (name obj) (types obj)))
+  (format stream "#<type-operator (~a~{ ~a~})>" (name obj) (types obj)))
+
 
 ;; function
+;; A binary type constructor which builds function types
 (defclass-triv ~function (~type-operator))
 
 (defun ~function (from-type to-type)
   (make-instance '~function :from-type from-type :to-type to-type))
 
 (defmethod initialize-instance ((obj ~function) &key from-type to-type)
-  (setf (name obj) :->
+  (setf (name obj) 'function
         (types obj) `(,from-type ,to-type)))
+
 
 ;; basic types are constructed with a nullary type constructor
 
-(defvar ~integer (make-instance '~type-operator :name "int" :types nil))
-(defvar ~bool (make-instance '~type-operator :name "bool" :types nil))
+(defvar ~integer (~type-operator 'integer))
+(defvar ~boolean (~type-operator 'boolean))
+
 
 ;; environment
 (defclass-triv ~env () (internal :initform (make-hash-table)))
@@ -220,39 +232,39 @@
                    (otherwise nil))))) ;; assumed. maybe should be error?
       (fresh-rec type))))
 
-;; UGH the side effects...cant we clean this up a bit?
+
 (defun ~unify (type-a type-b)
   "Unify the two types type-a and type-b.
+   Makes the types type-a and type-b the same.
 
-    Makes the types type-a and type-b the same.
+   Args: type-a: The first type to be made equivalent
+         type-b: The second type to be be equivalent
 
-    Args:
-        type-a: The first type to be made equivalent
-        type-b: The second type to be be equivalent
+   Returns: nil
 
-    Returns:
-        None
-
-    Raises:
-        TypeError: Raised if the types cannot be unified."
+   Raises: TypeError: Raised if the types cannot be unified."
   (let ((a (~prune type-a))
         (b (~prune type-b)))
     (cond
       ((typep a '~type-variable)
-       (when (not (equal a b))
-         (when (~occurs-in-type a b)
-           (error '~type-error :reason "recursive unification"))
-         (setf (instance a) b)))
-      ((and (typep a '~type-operator) (typep b '~type-variable))
-       (~unify b a))
+       (if (equal a b)
+           nil ;; already unified
+           (if (~occurs-in a b)
+               (error '~type-error :reason "recursive unification")
+               (setf (instance a) b))))
+      ;; reorder and use first clause
+      ((and (typep a '~type-operator) (typep b '~type-variable)) (~unify b a))
+      ;;
       ((and (typep a '~type-operator) (typep b '~type-operator))
-       (when (or (not (equal (name a) (name b)))
+       (when (or (not (eq (name a) (name b)))
                  (not (= (length (types a)) (length (types b)))))
          (error '~type-error
                 :reason (format nil "type mismatch (type-equal ~s ~s" a b)))
        (mapcar #'~unify (types a) (types b)))
-      (t (error "Could not unify types ~a ~a (~a ~a)"
-                type-a type-b a b)))))
+      (t (error '~type-error :reason
+                (format nil "Could not unify types ~a ~a (~a ~a)"
+                        type-a type-b a b))))
+    nil))
 
 (defun ~prune (type)
   "Returns the currently defining instance of type.
@@ -289,9 +301,9 @@
 
     Returns:
         True if v is a generic variable, otherwise False"
-  (not (~occurs-in v non-generic)))
+  (not (some λ(~occurs-in v _) non-generic)))
 
-(defun ~occurs-in-type (v type-2)
+(defun ~occurs-in (v type-2)
   "Checks whether a type variable occurs in a type expression.
 
     Note: Must be called with v pre-pruned
@@ -305,18 +317,7 @@
   (let ((pruned-type-2 (~prune type-2)))
     (cond ((equal pruned-type-2 v) t)
           ((typep pruned-type-2 '~type-operator)
-           (~occurs-in v (types pruned-type-2))))))
-
-(defun ~occurs-in (type types)
-  "Checks whether a types variable occurs in any other types.
-
-    Args:
-        type:  The TypeVariable to be tested for
-        types: The sequence of types in which to search
-
-    Returns:
-        True if type occurs in any of types, otherwise False"
-  (some #'(lambda (x) (~occurs-in-type type x)) types))
+           (some λ(~occurs-in v _) (types pruned-type-2))))))
 
 (defun ~is-integer-literal (name)
   "Checks whether name is an integer literal string.
@@ -326,38 +327,34 @@
 
     Returns:
         True if name is an integer literal, otherwise False"
-  (handler-case (and (parse-integer name) t)
-    (parse-error () nil)))
+  (typep name 'integer))
 
 ;;-------------------------------------------------------------
 ;; Examples
 
 (let* ((var1 (~type-variable))
              (var2 (~type-variable))
-             (pair-type (~type-operator "*" var1 var2))
+             (pair-type (~type-operator '* var1 var2))
              (var3 (~type-variable))
-             (my-env (make-env "pair" (~function var1 (~function var2 pair-type))
-                               "true" ~bool
-                               "cond" (~function ~bool (~function var3 (~function var3 var3)))
-                               "zero" (~function ~integer ~bool)
-                               "pred" (~function ~integer ~integer)
-                               "times" (~function ~integer (~function ~integer ~integer)))))
-  (let (;; (pair (~apply (~apply (~ident "pair")
-        ;;                       (~apply (~ident "f") (~ident "4")))
-        ;;               (~apply (~ident "f") (~ident "true"))))
-        (example
-         (~let-rec "factorial"
-                   (~lambda "n"
+             (my-env (make-env 'pair (~function var1 (~function var2 pair-type))
+                               'true ~boolean
+                               'cond (~function ~boolean (~function var3 (~function var3 var3)))
+                               'zero (~function ~integer ~boolean)
+                               'pred (~function ~integer ~integer)
+                               'times (~function ~integer (~function ~integer ~integer)))))
+  (let ((example
+         (~let-rec 'factorial
+                   (~lambda 'n
                             (~apply
                              (~apply
-                              (~apply (~ident "cond")
-                                      (~apply (~ident "zero") (~ident "n")))
-                              (~ident "1"))
+                              (~apply (~ident 'cond)
+                                      (~apply (~ident 'zero) (~ident 'n)))
+                              (~ident 1))
                              (~apply
-                              (~apply (~ident "times") (~ident "n"))
-                              (~apply (~ident "factorial")
-                                      (~apply (~ident "pred") (~ident "n"))))))
-                   (~apply (~ident "factorial") (~ident "5")))))
+                              (~apply (~ident 'times) (~ident 'n))
+                              (~apply (~ident 'factorial)
+                                      (~apply (~ident 'pred) (~ident 'n))))))
+                   (~apply (~ident 'factorial) (~ident 5)))))
 
     (defun test () (try-exp my-env example))))
 
